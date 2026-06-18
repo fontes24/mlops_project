@@ -13,3 +13,5 @@ metrics/*.json
 ## DVC
 .dvc
 
+# MLflow
+mlruns
