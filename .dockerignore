@@ -9,3 +9,7 @@ data/**/*.csv
 
 # Metrics
 metrics/*.json
+
+## DVC
+.dvc
+
