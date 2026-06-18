@@ -1,4 +1,7 @@
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables from .env file
 
 # Configure the logging strategy
 logging.basicConfig(
