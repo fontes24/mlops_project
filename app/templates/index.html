@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Breast Cancer Prediction</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .error { color: red; }
+        .success { color: green; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Breast Cancer Prediction Interface</h1>
+        <form action="/upload" method="post" enctype="multipart/form-data">
+            <p>Upload a CSV file with breast cancer features:</p>
+            <input type="file" name="file" accept=".csv" required>
+            <input type="submit" value="Get Predictions">
+        </form>
+        {% if error %}
+        <p class="error">{{ error }}</p>
+        {% endif %}
+        {% if predictions %}
+        <h2>Predictions:</h2>
+        <pre>{{ predictions }}</pre>
+        {% endif %}
+    </div>
+</body>
+</html>
