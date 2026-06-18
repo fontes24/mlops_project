@@ -58,7 +58,7 @@ The project requires Python 3.12+ and the packages informed in `pyproject.toml`.
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/fontes24/mlops_project.git
 cd mlops_project
 ```
 
