@@ -1,5 +1,6 @@
 stages:
   load_data:
+    always_changed: true
     cmd: python -m src.data_loading.load_data
     deps:
       - src/data_loading/load_data.py
