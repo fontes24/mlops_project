@@ -1,0 +1,16 @@
+services:
+  ml-classifier:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ml-classifier
+    container_name: ml-classifier
+    env_file:
+      - .env
+    environment:
+      MODEL_URI: ${MODEL_URI:-models:/model/@production}
+      MODEL_NAME: ${MODEL_NAME:-model}
+      PRODUCTION_ALIAS: ${PRODUCTION_ALIAS:-production}
+    ports:
+      - "5001:5001"
+    restart: unless-stopped
