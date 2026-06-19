@@ -1,11 +1,22 @@
 import logging
+import os
+
 import mlflow
+from dotenv import load_dotenv
 from mlflow.tracking import MlflowClient
 import pandas as pd
 
+load_dotenv()
 
 logger = logging.getLogger("src.register_artifacts")
-    
+
+if os.getenv("MLFLOW_TRACKING_URI"):
+    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
+    logger.info(f"MLflow tracking URI set to {os.getenv('MLFLOW_TRACKING_URI')}")
+
+REGISTERED_MODEL_NAME = os.getenv("MODEL_NAME", "model")
+PRODUCTION_ALIAS = os.getenv("PRODUCTION_ALIAS", "production")
+
 client = MlflowClient()
 
 
@@ -60,19 +71,34 @@ def register_model() -> None:
         logger.info(f"Using best run {run_id} with test_accuracy: {best_run.data.metrics['test_accuracy']}")
 
     # Register the model from the run
-    logger.info("Registering model")
+    logger.info(f"Registering model '{REGISTERED_MODEL_NAME}'")
     try:
-        client.create_registered_model("model")
-    except mlflow.exceptions.MlflowException:
-        logger.debug("Model already exists")
+        client.create_registered_model(REGISTERED_MODEL_NAME)
+        logger.info(f"Created registered model '{REGISTERED_MODEL_NAME}'")
+    except mlflow.exceptions.RestException as exc:
+        if exc.error_code != "RESOURCE_ALREADY_EXISTS":
+            raise
+        logger.debug(f"Registered model '{REGISTERED_MODEL_NAME}' already exists")
 
     model_uri = f"runs:/{run_id}/model"
-    client.create_model_version(
-        name="model",
+    model_version = client.create_model_version(
+        name=REGISTERED_MODEL_NAME,
         source=model_uri,
-        run_id=run_id
+        run_id=run_id,
     )
-    logger.info("Registered model successfully")
+    version = model_version.version
+    logger.info(
+        f"Registered model version {version} for '{REGISTERED_MODEL_NAME}'"
+    )
+
+    client.set_registered_model_alias(
+        name=REGISTERED_MODEL_NAME,
+        alias=PRODUCTION_ALIAS,
+        version=version,
+    )
+    logger.info(
+        f"Promoted version {version} of '{REGISTERED_MODEL_NAME}' to alias '{PRODUCTION_ALIAS}'"
+    )
 
 
 def main() -> None:
