@@ -10,12 +10,70 @@ load_dotenv()
 
 logger = logging.getLogger("src.register_artifacts")
 
-if os.getenv("MLFLOW_TRACKING_URI"):
-    mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
-    logger.info(f"MLflow tracking URI set to {os.getenv('MLFLOW_TRACKING_URI')}")
-
 REGISTERED_MODEL_NAME = os.getenv("MODEL_NAME", "model")
 PRODUCTION_ALIAS = os.getenv("PRODUCTION_ALIAS", "production")
+DAGSHUB_USER_TOKEN = os.getenv("DAGSHUB_USER_TOKEN")
+
+
+def _parse_dagshub_repo_from_tracking_uri(uri: str):
+    """Return (owner, repo) parsed from a DagsHub tracking URI, or (None, None).
+
+    Examples:
+        https://dagshub.com/fontes24/mlops_project.mlflow
+            -> ("fontes24", "mlops_project")
+        https://dagshub.com/fontes24/mlops_project.mlflow/
+            -> ("fontes24", "mlops_project")
+    """
+    if not uri:
+        return None, None
+    try:
+        from urllib.parse import urlparse
+
+        parts = [p for p in urlparse(uri).path.split("/") if p]
+    except Exception:  # noqa: BLE001
+        return None, None
+    if len(parts) < 2:
+        return None, None
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".mlflow"):
+        repo = repo[: -len(".mlflow")]
+    return owner, repo
+
+
+def _configure_mlflow_auth() -> None:
+    """Configure MLflow tracking URI and DagsHub authentication.
+
+    DagsHub's Model Registry API rejects anonymous requests with 403
+    ("Only signed in user is allowed to call APIs."), so the request must
+    carry Basic auth. The official ``dagshub`` Python library wires this up
+    for us when we call ``dagshub.init(...)`` and ``dagshub.auth.add_token``.
+    Owner/repo are derived from ``MLFLOW_TRACKING_URI`` when not set as
+    standalone env vars.
+    """
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
+    if tracking_uri:
+        mlflow.set_tracking_uri(tracking_uri)
+        logger.info(f"MLflow tracking URI set to {tracking_uri}")
+
+    owner = os.getenv("DAGSHUB_REPO_OWNER")
+    name = os.getenv("DAGSHUB_REPO_NAME")
+    if not owner or not name:
+        owner, name = _parse_dagshub_repo_from_tracking_uri(tracking_uri or "")
+
+    if DAGSHUB_USER_TOKEN and owner and name:
+        import dagshub  # lazy import for environments without dagshub
+
+        dagshub.auth.add_app_token(DAGSHUB_USER_TOKEN)
+        dagshub.init(repo_owner=owner, repo_name=name, mlflow=True)
+        logger.info(f"DagsHub auth configured for {owner}/{name}")
+    elif not DAGSHUB_USER_TOKEN:
+        logger.warning(
+            "DAGSHUB_USER_TOKEN is not set; authenticated MLflow calls will "
+            "fail with 403."
+        )
+
+
+_configure_mlflow_auth()
 
 client = MlflowClient()
 
@@ -81,6 +139,10 @@ def register_model() -> None:
         logger.debug(f"Registered model '{REGISTERED_MODEL_NAME}' already exists")
 
     model_uri = f"runs:/{run_id}/model"
+    # ``create_model_version`` blocks up to 300s waiting for READY on some
+    # registries (notably DagsHub). We don't need to wait here because
+    # ``set_registered_model_alias`` accepts PENDING_REGISTRATION versions and
+    # the runtime (app/main.py) loads artifacts directly via run_id.
     model_version = client.create_model_version(
         name=REGISTERED_MODEL_NAME,
         source=model_uri,
@@ -88,7 +150,8 @@ def register_model() -> None:
     )
     version = model_version.version
     logger.info(
-        f"Registered model version {version} for '{REGISTERED_MODEL_NAME}'"
+        f"Registered model version {version} for '{REGISTERED_MODEL_NAME}' "
+        f"(status: {model_version.status})"
     )
 
     client.set_registered_model_alias(
@@ -97,7 +160,8 @@ def register_model() -> None:
         version=version,
     )
     logger.info(
-        f"Promoted version {version} of '{REGISTERED_MODEL_NAME}' to alias '{PRODUCTION_ALIAS}'"
+        f"Promoted version {version} of '{REGISTERED_MODEL_NAME}' to alias "
+        f"'{PRODUCTION_ALIAS}'"
     )
 
 

@@ -18,12 +18,55 @@ DEFAULT_MODEL_URI = "models:/model/@production"
 DEFAULT_MODEL_NAME = "model"
 
 
+def _parse_dagshub_repo_from_tracking_uri(uri: str):
+    """Return (owner, repo) parsed from a DagsHub tracking URI, or (None, None)."""
+    if not uri:
+        return None, None
+    try:
+        from urllib.parse import urlparse
+
+        parts = [p for p in urlparse(uri).path.split("/") if p]
+    except Exception:  # noqa: BLE001
+        return None, None
+    if len(parts) < 2:
+        return None, None
+    owner, repo = parts[0], parts[1]
+    if repo.endswith(".mlflow"):
+        repo = repo[: -len(".mlflow")]
+    return owner, repo
+
+
 def _configure_mlflow() -> None:
-    """Configure MLflow tracking URI from environment, with safe defaults."""
+    """Configure MLflow tracking URI and DagsHub authentication.
+
+    DagsHub rejects anonymous Model Registry requests with 403. The official
+    ``dagshub`` Python library injects the correct Basic auth header when we
+    call ``dagshub.init(...)`` and ``dagshub.auth.add_token(...)``. The
+    owner/repo are derived from ``MLFLOW_TRACKING_URI`` when not set as
+    standalone env vars.
+    """
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI")
     if tracking_uri:
         mlflow.set_tracking_uri(tracking_uri)
         logger.info(f"MLflow tracking URI set to {tracking_uri}")
+
+    token = os.getenv("DAGSHUB_USER_TOKEN")
+    owner = os.getenv("DAGSHUB_REPO_OWNER")
+    name = os.getenv("DAGSHUB_REPO_NAME")
+    if not owner or not name:
+        owner, name = _parse_dagshub_repo_from_tracking_uri(tracking_uri or "")
+
+    if token and owner and name:
+        import dagshub
+
+        dagshub.auth.add_app_token(token)
+        dagshub.init(repo_owner=owner, repo_name=name, mlflow=True)
+        logger.info(f"DagsHub auth configured for {owner}/{name}")
+    elif not token:
+        logger.warning(
+            "DAGSHUB_USER_TOKEN is not set; authenticated MLflow calls will "
+            "fail with 403."
+        )
 
 
 _configure_mlflow()
@@ -39,6 +82,39 @@ class ModelService:
         self.model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL_NAME)
         self._load_artifacts()
 
+    def _resolve_version(self) -> int:
+        """Resolve a model URI to a concrete version number.
+
+        DagsHub's MLflow proxy still routes ``models:/<name>/@<alias>`` through
+        the legacy ``get_latest_versions(stage=...)`` endpoint, which rejects
+        alias-style references with ``INVALID_PARAMETER_VALUE``. We resolve the
+        alias to a numeric version client-side first, then load by version.
+        """
+        client = MlflowClient()
+        if "@" in self.model_uri:
+            try:
+                alias = self.model_uri.split("@", 1)[1]
+                version = client.get_model_version_by_alias(
+                    self.model_name, alias
+                ).version
+                logger.info(
+                    f"Resolved alias '@{alias}' of '{self.model_name}' to "
+                    f"version {version}"
+                )
+                return int(version)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    f"Could not resolve alias in {self.model_uri}: {exc}. "
+                    "Falling back to latest version."
+                )
+        # Fallback: pick the highest version for the model.
+        versions = client.search_model_versions(f"name='{self.model_name}'")
+        if not versions:
+            raise mlflow.exceptions.MlflowException(
+                f"No versions found for model '{self.model_name}'"
+            )
+        return max(int(v.version) for v in versions)
+
     def _load_artifacts(self):
         """Load the registered model from MLflow Model Registry and related artifacts from its run.
 
@@ -47,15 +123,13 @@ class ModelService:
         """
         logger.info(f"Loading registered model from MLflow Model Registry at {self.model_uri}")
         try:
-            self.model = mlflow.keras.load_model(self.model_uri)
+            version = self._resolve_version()
+            versioned_uri = f"models:/{self.model_name}/{version}"
+            self.model = mlflow.keras.load_model(versioned_uri)
 
             client = MlflowClient()
-            registered = client.get_registered_model(self.model_name)
-            if not registered.latest_versions:
-                raise mlflow.exceptions.MlflowException(
-                    f"No registered versions found for model '{self.model_name}'"
-                )
-            run_id = registered.latest_versions[0].run_id
+            mv = client.get_model_version(self.model_name, str(version))
+            run_id = mv.run_id
 
             logger.info(f"Loading artifacts from run {run_id}")
             artifacts_dir = mlflow.artifacts.download_artifacts(run_id=run_id, artifact_path="")
